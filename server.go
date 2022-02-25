@@ -21,6 +21,7 @@ func (s *Server)Handler(conn net.Conn)  {
 }
 // Start 启动服务器的接口
 func (s *Server) Start (){
+	fmt.Println("-------->开启聊天室<----------")
 	//1.socket listen
 	listen, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.Ip, s.Port))
 	if err != nil {
