@@ -2,14 +2,16 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 type Server struct {
-	Ip   string //绑定主机地址
-	Port int    //绑定端口号
-
+	Ip     string    //绑定主机地址
+	Port   int       //绑定端口号
+	IsLive chan bool //超时强制T除用户
 	//在线用户列表
 	OnlineMap map[string]*User
 	mapLock   sync.RWMutex
@@ -23,6 +25,7 @@ func NewServer(ip string, port int) *Server {
 	return &Server{
 		Ip:        ip,
 		Port:      port,
+		IsLive:    make(chan bool),
 		OnlineMap: make(map[string]*User),
 		Message:   make(chan string),
 	}
@@ -30,20 +33,55 @@ func NewServer(ip string, port int) *Server {
 
 // Handler 处理当前连接的业务
 func (s *Server) Handler(conn net.Conn) {
-	//链接当前的业务
 
 	//1.用户建立conn之后，把当前用户加入OnlineMap中
-	user := NewUser(conn)
-	s.mapLock.Lock()
-	s.OnlineMap[user.Name] = user
-	s.mapLock.Unlock()
+	user := NewUser(conn, s)
+	user.Online()
 
-	//2.通过BroadCast()广播功能通知所有用户
-	s.BroadCast(user, "已上线")
+	//3. 接收客户端发送的消息
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := conn.Read(buf)
+			if n == 0 {
+				user.Offline()
+				return
+			}
+			if err != nil && err != io.EOF {
+				fmt.Println("=》Server《= conn.Read() error:", err)
+				return
+			}
+
+			//提取哦用户的消息去除(\n)
+			msg := string(buf[:n-1])
+
+			//将得到的消息进行广播
+			user.DoMessage(msg)
+
+			//用户的任意消息，代表当前用户是一个活跃的对象
+			s.IsLive <- true
+		}
+	}()
 
 	//阻塞
-	select {
+	for {
+		select {
+		case <-s.IsLive:
+			// 在10s内，只要该用户操作就会一直写入数据到IsLive中，持续保活。
+			// 不用做任何操作，只是为了重置定时器
+		case <-time.After(time.Second * 10):
+			// 强制下线通知（私聊）
+			user.SendMsg("因长时间未操作，您被强制下线。。。")
 
+			//下线广播（世界广博）
+			user.Offline()
+
+			// Server端释放当前用户的Conn链接。
+			user.conn.Close()
+
+			//退出当前的Handler
+			return //也可以执行 runtime.Goexit() 释放协程资源
+		}
 	}
 }
 
